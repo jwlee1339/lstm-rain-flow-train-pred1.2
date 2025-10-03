@@ -44,6 +44,24 @@ lstm-flow1.1/
 └── README.md                     # 專案說明文件
 ```
 
+## 資料格式
+
+### 1. 原始資料 (.txt)
+
+  腳本 preprocess_data.py 設計用於讀取特定格式的文字檔，其格式如下：
+  ; 註解行
+  ; Name YYYY-MM-DDTHH:mm VALUE
+  ID 2022-01-01T00:00 12.34
+  ID 2022-01-01T01:00 56.78
+
+### 2. 處理後資料 (.csv)
+
+train1.py 和 app.py 都使用標準的 CSV 格式，必須包含以下欄位：
+
+- obstime: 時間戳 (例如 2023-10-04 00:00:00)
+- rainfall: 該時段的雨量 (mm)
+- flow: 該時段的流量 (CMS)
+
 ## 安裝
 
 1. 確認您已安裝 Python 3.8 或更高版本。
@@ -112,3 +130,10 @@ python pred1.py
 腳本會自動載入 `flow_prediction_model.pth` 和 `data/2023pred1.csv` 檔案，並將預測結果的對照表和評估圖表儲存於 `Result` 目錄中。
 
 您可以修改 `pred1.py` 中的 `DATA_PATH` 和 `MODEL_PATH` 變數來指定不同的輸入檔案。
+
+## streamlit 應用
+
+應用程式啟動後，您可以：
+
+1. 點擊側邊欄的「載入範例資料」快速體驗，或上傳您自己的 CSV 預測資料。 
+2. 選擇您想分析的開始與結束日期。 +3. 點擊「執行預測」按鈕，即可在頁面上看到預測結果表格、評估指標與視覺化圖表。
