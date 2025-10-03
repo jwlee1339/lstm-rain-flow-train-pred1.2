@@ -150,6 +150,17 @@ with st.sidebar:
         help="CSV 檔案必須包含 'obstime', 'rainfall', 'flow' 三個欄位。"
     )
     
+    # 新增：範例展示按鈕
+    if st.button("載入範例資料"):
+        st.session_state.run_demo = True
+        st.session_state.uploaded_file = None # 清除已上傳的檔案狀態
+        # 使用 st.rerun() 來立即刷新應用狀態
+        st.rerun()
+
+    # 如果使用者上傳新檔案，則取消範例模式
+    if uploaded_file is not None:
+        st.session_state.run_demo = False
+
     # 預測參數
     LEAD_HOURS_TO_FORECAST = st.slider("預測未來時數 (Lead Hours)", 1, 24, 6)
     LEAD_TIMES_TO_EVALUATE = [1, 3, 6]
@@ -157,29 +168,37 @@ with st.sidebar:
 
 # --- 主頁面邏輯 ---
 if uploaded_file is not None:
+    st.session_state.run_demo = False
+    data_source = uploaded_file
+elif 'run_demo' in st.session_state and st.session_state.run_demo:
+    st.info("您正在使用範例資料進行展示。")
+    data_source = 'data/rainfall_flow_aligned.csv'
+else:
+    data_source = None
+
+if data_source is not None:
     # 載入並準備資料
     # 這次先載入完整資料以取得日期範圍
-    full_df = load_and_prepare_data(uploaded_file, shift_hours=1)
+    full_df = load_and_prepare_data(data_source, shift_hours=1)
 
-    with st.sidebar:
-        st.markdown("---")
-        st.header("🗓️ 日期範圍篩選")
-        min_date = full_df.index.min().date()
-        max_date = full_df.index.max().date()
+    if full_df is not None:
+        with st.sidebar:
+            st.markdown("---")
+            st.header("🗓️ 日期範圍篩選")
+            min_date = full_df.index.min().date()
+            max_date = full_df.index.max().date()
 
-        start_date = st.date_input("開始日期", min_date, min_value=min_date, max_value=max_date)
-        end_date = st.date_input("結束日期", max_date, min_value=start_date, max_value=max_date)
+            # 如果是範例模式，設定預設日期
+            if 'run_demo' in st.session_state and st.session_state.run_demo:
+                start_date_default = pd.to_datetime("2022-09-01").date()
+                end_date_default = pd.to_datetime("2022-09-30").date()
+            else:
+                start_date_default = min_date
+                end_date_default = max_date
 
-    # 將 start_date 和 end_date 轉換為 datetime 以篩選 DataFrame
-    start_datetime = pd.to_datetime(start_date)
-    # 結束時間設為當天的 23:59:59 以包含整天
-    end_datetime = pd.to_datetime(end_date) + pd.Timedelta(days=1, seconds=-1)
+            start_date = st.date_input("開始日期", start_date_default, min_value=min_date, max_value=max_date)
+            end_date = st.date_input("結束日期", end_date_default, min_value=start_date, max_value=max_date)
 
-    # 根據選擇的日期範圍篩選資料
-    df = full_df.loc[start_datetime:end_datetime]
-
-# --- 主頁面邏輯 ---
-if uploaded_file is not None:
     # 載入模型 (會被快取)
     model, scaler, lookback, forecast_horizon = load_model(MODEL_PATH)
     
@@ -190,63 +209,74 @@ if uploaded_file is not None:
     - **Forecast Horizon:** `{forecast_horizon}` 小時
     """)
 
-    st.subheader("上傳資料預覽 (前5筆)")
-    st.dataframe(df.head())
+    # 根據選擇的日期範圍篩選資料，用於顯示預覽
+    start_datetime_preview = pd.to_datetime(start_date)
+    end_datetime_preview = pd.to_datetime(end_date) + pd.Timedelta(days=1, seconds=-1)
+    df_preview = full_df.loc[start_datetime_preview:end_datetime_preview]
+
+    st.subheader(f"資料預覽 (從 {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')})")
+    st.dataframe(df_preview.head())
 
     # 執行預測按鈕
     if st.button("🚀 執行預測", type="primary"):
-        with st.spinner("正在準備資料並執行預測，請稍候..."):
-            # 準備預測數據集
-            FEATURE_COLS = ['flow', 'fcstrain_1h']
-            raw_data_values = df[FEATURE_COLS].values
-            X, y = create_dataset(raw_data_values, lookback, forecast_horizon)
+        if df_preview.empty:
+            st.error("選定的日期範圍內沒有資料，請重新選擇。")
+        else:
+            with st.spinner("正在準備資料並執行預測，請稍候..."):
+                # 準備預測數據集
+                # **重要：使用完整的 full_df 來創建 X，以確保有足夠的未來數據**
+                FEATURE_COLS = ['flow', 'fcstrain_1h']
+                raw_data_values = full_df[FEATURE_COLS].values
+                X, y = create_dataset(raw_data_values, lookback, forecast_horizon)
 
-            # 執行迭代預測
-            df_pred = perform_iterative_forecast(df, model, scaler, X, lookback, forecast_horizon, LEAD_HOURS_TO_FORECAST)
+                # 執行迭代預測
+                df_pred_full = perform_iterative_forecast(full_df, model, scaler, X, lookback, forecast_horizon, LEAD_HOURS_TO_FORECAST)
 
-            st.subheader("📊 預測結果")
-            st.dataframe(df_pred)
+                st.subheader("📊 預測結果")
+                # 從完整的預測結果中，篩選出使用者想看的日期範圍
+                df_pred = df_pred_full.loc[start_datetime_preview:end_datetime_preview]
+                st.dataframe(df_pred)
 
-            st.subheader("📈 評估與視覺化")
-            
-            # 針對要評估的 lead time 進行迭代
-            for pred_hour in LEAD_TIMES_TO_EVALUATE:
-                if f'h{pred_hour}' not in df_pred.columns:
-                    continue
-
-                st.markdown(f"--- \n ### 領先時間 (Lead Time): {pred_hour} 小時")
+                st.subheader("📈 評估與視覺化")
                 
-                # 準備觀測與預測數據以進行比對
-                pred_series = df_pred[f'h{pred_hour}'].copy()
-                pred_series.index += pd.to_timedelta(pred_hour, unit='h')
-                pred_series.name = 'pred_flow'
-                obs_series = df[['flow', 'rainfall']].copy()
-                eval_df = pd.merge(obs_series, pred_series, left_index=True, right_index=True, how='inner')
+                # 針對要評估的 lead time 進行迭代
+                for pred_hour in LEAD_TIMES_TO_EVALUATE:
+                    if f'h{pred_hour}' not in df_pred.columns:
+                        continue
 
-                if eval_df.empty:
-                    st.warning(f"無法對齊 h{pred_hour} 的數據，跳過評估。")
-                    continue
+                    st.markdown(f"--- \n ### 領先時間 (Lead Time): {pred_hour} 小時")
+                    
+                    # 準備觀測與預測數據以進行比對
+                    pred_series = df_pred[f'h{pred_hour}'].copy()
+                    pred_series.index += pd.to_timedelta(pred_hour, unit='h')
+                    pred_series.name = 'pred_flow'
+                    obs_series = full_df[['flow', 'rainfall']].copy() # 使用 full_df 來匹配觀測值
+                    eval_df = pd.merge(obs_series, pred_series, left_index=True, right_index=True, how='inner')
 
-                # 計算評估指標
-                obs_flow = eval_df['flow'].to_numpy()
-                pred_flow = eval_df['pred_flow'].to_numpy()
-                model_eva = ModelTest(qo=obs_flow, preq=pred_flow)
+                    if eval_df.empty:
+                        st.warning(f"無法對齊 h{pred_hour} 的數據，跳過評估。")
+                        continue
 
-                # 在網頁上顯示評估指標
-                col1, col2, col3 = st.columns(3)
-                col1.metric("效率係數 (CE)", f"{model_eva.get('CE', 0):.3f}")
-                col2.metric("相關係數 (COR)", f"{model_eva.get('COR', 0):.3f}")
-                col3.metric("洪峰誤差 (EQP %)", f"{model_eva.get('EQP', 0):.2f}%")
+                    # 計算評估指標
+                    obs_flow = eval_df['flow'].to_numpy()
+                    pred_flow = eval_df['pred_flow'].to_numpy()
+                    model_eva = ModelTest(qo=obs_flow, preq=pred_flow)
 
-                # 繪製圖表
-                fig = plot_prediction_vs_observation(
-                    obs_df=eval_df[['flow', 'rainfall']],
-                    pred_df=eval_df[['pred_flow']],
-                    pred_hour=pred_hour,
-                    metrics=model_eva
-                )
-                if fig:
-                    st.pyplot(fig)
+                    # 在網頁上顯示評估指標
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("效率係數 (CE)", f"{model_eva.get('CE', 0):.3f}")
+                    col2.metric("相關係數 (COR)", f"{model_eva.get('COR', 0):.3f}")
+                    col3.metric("洪峰誤差 (EQP %)", f"{model_eva.get('EQP', 0):.2f}%")
+
+                    # 繪製圖表
+                    fig = plot_prediction_vs_observation(
+                        obs_df=eval_df[['flow', 'rainfall']],
+                        pred_df=eval_df[['pred_flow']],
+                        pred_hour=pred_hour,
+                        metrics=model_eva
+                    )
+                    if fig:
+                        st.pyplot(fig)
 
 else:
     st.info("請從左側側邊欄上傳資料檔案以開始。")
